@@ -1,10 +1,59 @@
+extern crate nalgebra as na;
+
+use na::{DMatrix, DVector};
 use plotters::prelude::*;
-use std::{convert::TryInto, u32, usize};
-use std::fs;
+use rand::Rng;
+use std::{borrow::Borrow, convert::TryInto, fs, u32, usize};
 
 struct TrainingImage {
-    pixels: Vec<u8>,
+    pixels: DVector<f64>,
     label: u8,
+}
+
+struct HiddenLayer {
+    weights: DMatrix<f64>,
+    bias: DVector<f64>,
+}
+
+impl HiddenLayer {
+    fn new(num_inputs: usize, num_nodes: usize) -> Self {
+        Self {
+            weights: DMatrix::from_vec(num_nodes, num_inputs, (0..num_inputs*num_nodes).map(|_| rand::thread_rng().gen_range(-10.0..10.0)).collect()),
+            bias: DVector::from_vec((0..num_nodes).map(|_| rand::thread_rng().gen_range(-10.0..10.0)).collect()),
+        }
+    }
+
+    fn apply(&self, input: &DVector<f64>) -> DVector<f64> {
+        let result = self.weights.borrow() * input + self.bias.borrow();
+        result.map(|value| f64::max(0.0, value))
+    }
+}
+struct FeedForward {
+    layers: Vec<HiddenLayer>,
+}
+
+impl FeedForward {
+    fn new(num_inputs: usize, num_nodes: usize, num_layers: usize, num_outputs: usize) -> Self {
+        let mut instance = Self {
+            layers: Vec::with_capacity(num_layers),
+        };
+
+        instance.layers.push(HiddenLayer::new(num_inputs, num_nodes));
+        for _ in 1..num_layers {
+            instance.layers.push(HiddenLayer::new(num_nodes, num_nodes));
+        }
+        instance.layers.push(HiddenLayer::new(num_nodes, num_outputs));
+
+        instance
+    }
+
+    fn apply(&self, input: &DVector<f64>) -> DVector<f64> {
+        let mut result: DVector<f64> = self.layers[0].apply(input);
+        for layer in self.layers[1..].iter() {
+            result = layer.apply(&result);
+        }
+        result
+    }
 }
 
 fn main() {
@@ -13,9 +62,27 @@ fn main() {
 
     let mut training_images:Vec<TrainingImage> = Vec::new();
     while let (Some(pixels),Some(label)) = (images_pixels.pop(), images_labels.pop()) {
-        training_images.push(TrainingImage{pixels, label});
+        training_images.push(TrainingImage{pixels: DVector::from(pixels), label});
     }
 
+    for pixel in training_images[0].pixels.iter() {
+        println!("P: {}", *pixel);
+    }
+
+    let ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
+    for layer in ff_nn.borrow().layers.iter() {
+        for weight in layer.weights.iter() {
+            println!("W: {}", *weight);
+        }
+        for bias in layer.bias.iter() {
+            println!("B: {}", *bias);
+        }
+    }
+
+    let result = ff_nn.apply(training_images[0].pixels.borrow());
+    for value in result.iter() {
+        println!("R: {}", value);
+    }
 
     for (idx, training_image) in training_images.iter().enumerate() {
         let file_name = &format!("plotted-{}.png", idx);
@@ -29,14 +96,14 @@ fn main() {
             for column in 0..num_columns {
                 let color = training_image.pixels[row * num_rows + column];
                 sub_areas[row * num_rows + column]
-                    .fill(&RGBColor(color, color, color))
+                    .fill(&HSLColor(color, color, color))
                     .unwrap();
             }
         }
     }
 }
 
-fn get_training_images() -> (usize, usize, Vec<Vec<u8>>) {
+fn get_training_images() -> (usize, usize, Vec<Vec<f64>>) {
     let training_images_file =
         fs::read("/home/rondao/train-images-idx3-ubyte").expect("Could not read images file.");
 
@@ -50,9 +117,9 @@ fn get_training_images() -> (usize, usize, Vec<Vec<u8>>) {
     let num_columns = u32::from_be_bytes(training_images_file[12..16].try_into().unwrap()) as usize;
 
     let image_size = (num_rows * num_columns) as usize;
-    let images_pixels: Vec<Vec<u8>> = training_images_file[16..]
+    let images_pixels = training_images_file[16..]
         .chunks(image_size)
-        .map(|x| x.to_vec())
+        .map(|pixels| pixels.iter().map(|p| *p as f64 / 255.0).collect())
         .collect();
 
     (num_rows, num_columns, images_pixels)
@@ -68,5 +135,5 @@ fn get_training_labels() -> Vec<u8> {
     );
     let _num_images = u32::from_be_bytes(training_labels_file[4..8].try_into().unwrap());
 
-    return training_labels_file[8..].to_vec();
+    training_labels_file[8..].to_vec()
 }
