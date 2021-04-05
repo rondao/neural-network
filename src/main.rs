@@ -48,7 +48,7 @@ impl FeedForward {
     }
 
     fn apply(&self, input: &DVector<f64>) -> DVector<f64> {
-        let mut result: DVector<f64> = self.layers[0].apply(input);
+        let mut result = self.layers[0].apply(input);
         for layer in self.layers[1..].iter() {
             result = layer.apply(&result);
         }
@@ -60,46 +60,16 @@ fn main() {
     let (num_rows, num_columns, mut images_pixels) = get_training_images();
     let mut images_labels = get_training_labels();
 
-    let mut training_images:Vec<TrainingImage> = Vec::new();
+    let mut training_images = Vec::new();
     while let (Some(pixels),Some(label)) = (images_pixels.pop(), images_labels.pop()) {
         training_images.push(TrainingImage{pixels: DVector::from(pixels), label});
     }
 
-    for pixel in training_images[0].pixels.iter() {
-        println!("P: {}", *pixel);
-    }
-
     let ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
-    for layer in ff_nn.borrow().layers.iter() {
-        for weight in layer.weights.iter() {
-            println!("W: {}", *weight);
-        }
-        for bias in layer.bias.iter() {
-            println!("B: {}", *bias);
-        }
-    }
 
-    let result = ff_nn.apply(training_images[0].pixels.borrow());
-    for value in result.iter() {
-        println!("R: {}", value);
-    }
-
-    for (idx, training_image) in training_images.iter().enumerate() {
-        let file_name = &format!("plotted-{}.png", idx);
-        println!("{} - {}", file_name, training_image.label);
-        let root_drawing_area =
-            BitMapBackend::new(file_name, (num_rows as u32, num_columns as u32))
-                .into_drawing_area();
-        let sub_areas = root_drawing_area.split_evenly((num_rows, num_columns));
-
-        for row in 0..num_rows {
-            for column in 0..num_columns {
-                let color = training_image.pixels[row * num_rows + column];
-                sub_areas[row * num_rows + column]
-                    .fill(&HSLColor(color, color, color))
-                    .unwrap();
-            }
-        }
+    let mut images_result = Vec::new();
+    for image in training_images.iter() {
+        images_result.push(ff_nn.apply(image.pixels.borrow()));
     }
 }
 
@@ -136,4 +106,21 @@ fn get_training_labels() -> Vec<u8> {
     let _num_images = u32::from_be_bytes(training_labels_file[4..8].try_into().unwrap());
 
     training_labels_file[8..].to_vec()
+}
+
+#[allow(dead_code)]
+fn image_to_file(file_name: String, image: TrainingImage, num_rows: usize, num_columns: usize) {
+    let root_drawing_area =
+        BitMapBackend::new(&file_name, (num_rows as u32, num_columns as u32))
+            .into_drawing_area();
+    let sub_areas = root_drawing_area.split_evenly((num_rows, num_columns));
+
+    for row in 0..num_rows {
+        for column in 0..num_columns {
+            let color = image.pixels[row * num_rows + column];
+            sub_areas[row * num_rows + column]
+                .fill(&HSLColor(color, color, color))
+                .unwrap();
+        }
+    }
 }
