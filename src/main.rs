@@ -1,35 +1,30 @@
-extern crate nalgebra as na;
-
-use na::{DMatrix, DVector};
+use ndarray::{prelude::*, Array};
+use ndarray_rand::{RandomExt, rand_distr::Uniform};
 use plotters::prelude::*;
-use rand::Rng;
-use std::{borrow::Borrow, convert::TryInto, fs, u32, usize};
+use std::{convert::TryInto, f64::consts::E, fs, u32, usize};
 
-struct TrainingImage {
-    pixels: DVector<f64>,
-    label: u8,
+struct TrainingData {
+    input: Array1<f64>,
+    expected: Array1<f64>,
+}
+
+struct FeedForward {
+    layers: Vec<HiddenLayer>,
 }
 
 struct HiddenLayer {
-    weights: DMatrix<f64>,
-    bias: DVector<f64>,
+    weights: Array2<f64>,
+    bias: Array1<f64>,
 }
 
-impl HiddenLayer {
-    fn new(num_inputs: usize, num_nodes: usize) -> Self {
-        Self {
-            weights: DMatrix::from_vec(num_nodes, num_inputs, (0..num_inputs*num_nodes).map(|_| rand::thread_rng().gen_range(-10.0..10.0)).collect()),
-            bias: DVector::from_vec((0..num_nodes).map(|_| rand::thread_rng().gen_range(-10.0..10.0)).collect()),
-        }
-    }
-
-    fn apply(&self, input: &DVector<f64>) -> DVector<f64> {
-        let result = self.weights.borrow() * input + self.bias.borrow();
-        result.map(|value| f64::max(0.0, value))
-    }
+struct LayerResult {
+    a: Array1<f64>,
+    z: Array1<f64>,
 }
-struct FeedForward {
-    layers: Vec<HiddenLayer>,
+
+struct LayerNabla {
+    weights: Array1<f64>,
+    bias: Array1<f64>,
 }
 
 impl FeedForward {
@@ -47,12 +42,93 @@ impl FeedForward {
         instance
     }
 
-    fn apply(&self, input: &DVector<f64>) -> DVector<f64> {
-        let mut result = self.layers[0].apply(input);
+    #[allow(dead_code)]
+    fn predict(&self, input: &Array1<f64>) -> Array1<f64> {
+        let mut result = self.apply(input);
+        result.remove(result.len() - 1).a
+    }
+
+    fn apply(&self, input: &Array1<f64>) -> Vec<LayerResult> {
+        let mut layers_result = Vec::with_capacity(self.layers.len());
+
+        // z⁽ᴸ⁾ = w⁽ᴸ⁾.a⁽ᴸ⁻¹⁾ + b⁽ᴸ⁾
+        let mut layer_z = self.layers[0].apply(input);
+        // a⁽ᴸ⁾ = σ(z⁽ᴸ⁾)
+        layers_result.push(
+            LayerResult{a: layer_z.mapv(|z| self.sigma(z)),
+                        z: layer_z});
+
         for layer in self.layers[1..].iter() {
-            result = layer.apply(&result);
+            layer_z = layer.apply(&layers_result.last().unwrap().a);
+            layers_result.push(
+                LayerResult{a: layer_z.mapv(|z| self.sigma(z)),
+                            z: layer_z});
         }
-        result
+
+        layers_result
+    }
+
+    fn train(&mut self, batch: &Vec<TrainingData>, eta: f64) {
+        let mut total_nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
+        for training_data in batch {
+            let training_nabla = self.back_propagate(training_data);
+            for (nabla, training_layer_nabla) in total_nabla.iter_mut().zip(training_nabla) {
+                nabla.weights += &training_layer_nabla.weights;
+                nabla.bias += &training_layer_nabla.bias;
+            }
+        }
+
+        for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
+            layer.weights -= &(&nabla.weights * eta / total_nabla.len() as f64);
+            layer.bias -= &(&nabla.bias * eta / total_nabla.len() as f64);
+        }
+    }
+
+    fn back_propagate(&self, training_data: &TrainingData) -> Vec::<LayerNabla> {
+        let ff_results = self.apply(&training_data.input);
+
+        // 𝛿⁽ᴸ⁾ == ∂C/∂a⁽ᴸ⁾ == ′C(a⁽ᴸ⁾, y) |=> y = expected result
+        let mut delta = self.cost_derivative(&ff_results.last().unwrap().a, &training_data.expected);
+
+        // ∇aC |=> Gradient to maximize the network
+        let mut nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
+        for (layer, result) in self.layers.iter().zip(ff_results).rev() {
+            // 𝛿⁽ᴸ⁾ == ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == ′σ(z⁽ᴸ⁾) . 𝛿⁽ᴸ⁾
+            delta = self.sigma_derivative(&result.z) * delta;
+            nabla.push(LayerNabla{
+                weights: &result.a * &delta, // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ . 𝛿⁽ᴸ⁾
+                bias: delta.clone(),         // ∂C/∂b⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂b⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == 1 . 𝛿⁽ᴸ⁾
+            });
+            // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾
+            delta = layer.weights.t().dot(&delta);
+        };
+        nabla
+    }
+
+    fn sigma(&self, z: f64) -> f64 {
+        1.0 / (1.0 + E.powf(-z))
+    }
+
+    fn sigma_derivative(&self, zs: &Array1<f64>) -> Array1<f64> {
+        zs.map(|z| self.sigma(*z) * (1.0 - self.sigma(*z)))
+    }
+
+    // Considering the cost function to be: C = ½(result - expected)²
+    fn cost_derivative(&self, result: &Array1<f64>, expected: &Array1<f64>) -> Array1<f64> {
+        result - expected
+    }
+}
+
+impl HiddenLayer {
+    fn new(num_inputs: usize, num_nodes: usize) -> Self {
+        Self {
+            weights: Array::random((num_nodes, num_inputs), Uniform::new(0., 1.)),
+            bias: Array::random(num_nodes, Uniform::new(0., 1.)),
+        }
+    }
+
+    fn apply(&self, input: &Array1<f64>) -> Array1<f64> {
+        &self.weights.dot(input) + &self.bias
     }
 }
 
@@ -62,15 +138,12 @@ fn main() {
 
     let mut training_images = Vec::new();
     while let (Some(pixels),Some(label)) = (images_pixels.pop(), images_labels.pop()) {
-        training_images.push(TrainingImage{pixels: DVector::from(pixels), label});
+        training_images.push(TrainingData{input: Array::from(pixels),
+                                          expected: label_to_output_array(label as usize, 10)});
     }
 
-    let ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
-
-    let mut images_result = Vec::new();
-    for image in training_images.iter() {
-        images_result.push(ff_nn.apply(image.pixels.borrow()));
-    }
+    let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
+    ff_nn.train(&training_images, 1.0);
 }
 
 fn get_training_images() -> (usize, usize, Vec<Vec<f64>>) {
@@ -108,8 +181,12 @@ fn get_training_labels() -> Vec<u8> {
     training_labels_file[8..].to_vec()
 }
 
+fn label_to_output_array(label: usize, size: usize) -> Array1<f64> {
+    Array::from_iter((0..size).map(|value| if value == label {1.0} else {0.0}))
+}
+
 #[allow(dead_code)]
-fn image_to_file(file_name: String, image: TrainingImage, num_rows: usize, num_columns: usize) {
+fn image_to_file(file_name: &str, image: &TrainingData, num_rows: usize, num_columns: usize) {
     let root_drawing_area =
         BitMapBackend::new(&file_name, (num_rows as u32, num_columns as u32))
             .into_drawing_area();
@@ -117,7 +194,7 @@ fn image_to_file(file_name: String, image: TrainingImage, num_rows: usize, num_c
 
     for row in 0..num_rows {
         for column in 0..num_columns {
-            let color = image.pixels[row * num_rows + column];
+            let color = image.input[row * num_rows + column];
             sub_areas[row * num_rows + column]
                 .fill(&HSLColor(color, color, color))
                 .unwrap();
