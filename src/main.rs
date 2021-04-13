@@ -23,7 +23,7 @@ struct LayerResult {
 }
 
 struct LayerNabla {
-    weights: Array1<f64>,
+    weights: Array2<f64>,
     bias: Array1<f64>,
 }
 
@@ -49,60 +49,66 @@ impl FeedForward {
     }
 
     fn apply(&self, input: &Array1<f64>) -> Vec<LayerResult> {
-        let mut layers_result = Vec::with_capacity(self.layers.len());
+        let mut layers_result = Vec::with_capacity(self.layers.len() + 1);
+        layers_result.push(LayerResult{a: input.clone(), z: input.clone()});
 
-        // z⁽ᴸ⁾ = w⁽ᴸ⁾.a⁽ᴸ⁻¹⁾ + b⁽ᴸ⁾
-        let mut layer_z = self.layers[0].apply(input);
-        // a⁽ᴸ⁾ = σ(z⁽ᴸ⁾)
-        layers_result.push(
-            LayerResult{a: layer_z.mapv(|z| self.sigma(z)),
-                        z: layer_z});
-
-        for layer in self.layers[1..].iter() {
-            layer_z = layer.apply(&layers_result.last().unwrap().a);
+        for (i, layer) in self.layers.iter().enumerate() {
+            let zs = layer.apply(&layers_result[i].a);
             layers_result.push(
-                LayerResult{a: layer_z.mapv(|z| self.sigma(z)),
-                            z: layer_z});
+                LayerResult{a: zs.mapv(|z| self.sigma(z)), // a⁽ᴸ⁾ = σ(z⁽ᴸ⁾)
+                            z: zs});                       // z⁽ᴸ⁾ = w⁽ᴸ⁾.a⁽ᴸ⁻¹⁾ + b⁽ᴸ⁾
         }
 
         layers_result
     }
 
     fn train(&mut self, batch: &Vec<TrainingData>, eta: f64) {
-        let mut total_nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
+        let mut total_nabla: Vec<_> = self.layers.iter().map(|layer| LayerNabla{
+            weights: Array2::zeros(layer.weights.raw_dim()),
+            bias: Array1::zeros(layer.bias.raw_dim()),
+        }).collect();
+
+        let mut total_cost = 0.;
         for training_data in batch {
-            let training_nabla = self.back_propagate(training_data);
-            for (nabla, training_layer_nabla) in total_nabla.iter_mut().zip(training_nabla) {
+            let (training_nabla, training_cost) = self.back_propagate(training_data);
+            for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
                 nabla.weights += &training_layer_nabla.weights;
                 nabla.bias += &training_layer_nabla.bias;
             }
+            total_cost += training_cost;
         }
+        total_cost /= batch.len() as f64;
+        println!("Cost: {}", total_cost);
 
         for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
-            layer.weights -= &(&nabla.weights * eta / total_nabla.len() as f64);
-            layer.bias -= &(&nabla.bias * eta / total_nabla.len() as f64);
+            let w = &nabla.weights * eta / total_nabla.len() as f64;
+            let b = &nabla.bias * eta / total_nabla.len() as f64;
+            layer.weights -= &w;
+            layer.bias -= &b;
         }
     }
 
-    fn back_propagate(&self, training_data: &TrainingData) -> Vec::<LayerNabla> {
-        let ff_results = self.apply(&training_data.input);
+    fn back_propagate(&self, training_data: &TrainingData) -> (Vec::<LayerNabla>, f64) {
+        let mut ff_results = self.apply(&training_data.input);
+        let last_result = ff_results.pop().unwrap();
 
-        // 𝛿⁽ᴸ⁾ == ∂C/∂a⁽ᴸ⁾ == ′C(a⁽ᴸ⁾, y) |=> y = expected result
-        let mut delta = self.cost_derivative(&ff_results.last().unwrap().a, &training_data.expected);
+        let cost = self.cost(&last_result.a, &training_data.expected) / last_result.a.len() as f64;
+
+        // 𝛿⁽ᴸ⁾ == ∂C/∂a⁽ᴸ⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ == ′C(a⁽ᴸ⁾, y) . ′σ(z⁽ᴸ⁾) |=> y = expected result
+        let mut delta = self.cost_derivative(&last_result.a, &training_data.expected) * self.sigma_derivative(&last_result.z);
 
         // ∇aC |=> Gradient to maximize the network
         let mut nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
         for (layer, result) in self.layers.iter().zip(ff_results).rev() {
-            // 𝛿⁽ᴸ⁾ == ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == ′σ(z⁽ᴸ⁾) . 𝛿⁽ᴸ⁾
-            delta = self.sigma_derivative(&result.z) * delta;
             nabla.push(LayerNabla{
-                weights: &result.a * &delta, // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ . 𝛿⁽ᴸ⁾
-                bias: delta.clone(),         // ∂C/∂b⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂b⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == 1 . 𝛿⁽ᴸ⁾
+                weights: delta.clone().into_shape((layer.weights.nrows(), 1)).unwrap()
+                        .dot(&result.a.into_shape((1, layer.weights.ncols())).unwrap()),  // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ᵀ . 𝛿⁽ᴸ⁾
+                bias: delta.clone(),                                                      // ∂C/∂b⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂b⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == 1 . 𝛿⁽ᴸ⁾
             });
-            // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾
-            delta = layer.weights.t().dot(&delta);
+            // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁻¹⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾ . ′σ(z⁽ᴸ⁾)
+            delta = layer.weights.t().dot(&delta) * self.sigma_derivative(&result.z);
         };
-        nabla
+        (nabla, cost)
     }
 
     fn sigma(&self, z: f64) -> f64 {
@@ -111,6 +117,14 @@ impl FeedForward {
 
     fn sigma_derivative(&self, zs: &Array1<f64>) -> Array1<f64> {
         zs.map(|z| self.sigma(*z) * (1.0 - self.sigma(*z)))
+    }
+
+    fn cost(&self, result: &Array1<f64>, expected: &Array1<f64>) -> f64 {
+        let mut cost = 0.0;
+        for (r, e) in result.iter().zip(expected.iter()) {
+            cost += (r - e).powi(2);
+        }
+        0.5 * cost
     }
 
     // Considering the cost function to be: C = ½(result - expected)²
@@ -123,7 +137,7 @@ impl HiddenLayer {
     fn new(num_inputs: usize, num_nodes: usize) -> Self {
         Self {
             weights: Array::random((num_nodes, num_inputs), Uniform::new(0., 1.)),
-            bias: Array::random(num_nodes, Uniform::new(0., 1.)),
+            bias: Array::random(num_nodes, Uniform::new(0., 1.))
         }
     }
 
@@ -143,7 +157,9 @@ fn main() {
     }
 
     let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
-    ff_nn.train(&training_images, 1.0);
+    loop {
+        ff_nn.train(&training_images, 1.0);
+    }
 }
 
 fn get_training_images() -> (usize, usize, Vec<Vec<f64>>) {
