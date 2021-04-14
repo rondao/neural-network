@@ -42,10 +42,23 @@ impl FeedForward {
         instance
     }
 
-    #[allow(dead_code)]
-    fn predict(&self, input: &Array1<f64>) -> Array1<f64> {
-        let mut result = self.apply(input);
-        result.remove(result.len() - 1).a
+    fn is_correct_result(&self, activation: &Array1<f64>, expecteds: &Array1<f64>) -> bool {
+        let (mut highest_a, mut prediction) = (0.0_f64, 0);
+        for (i, a) in activation.iter().enumerate() {
+            if *a > highest_a {
+                highest_a = *a;
+                prediction = i;
+            }
+        }
+
+        let mut expected = 0;
+        for (i, e) in expecteds.iter().enumerate() {
+            if *e == 1.0 {
+                expected = i;
+                break;
+            }
+        };
+        prediction == expected
     }
 
     fn apply(&self, input: &Array1<f64>) -> Vec<LayerResult> {
@@ -69,26 +82,29 @@ impl FeedForward {
         }).collect();
 
         let mut total_cost = 0.;
+        let mut score = 0;
         for training_data in batch {
-            let (training_nabla, training_cost) = self.back_propagate(training_data);
+            let (training_nabla, training_cost, is_correct) = self.back_propagate(training_data);
             for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
                 nabla.weights += &training_layer_nabla.weights;
                 nabla.bias += &training_layer_nabla.bias;
             }
             total_cost += training_cost;
+            score += if is_correct {1} else {0};
         }
         total_cost /= batch.len() as f64;
         println!("Cost: {}", total_cost);
+        println!("Score: {} / {}", score, batch.len());
 
         for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
-            let w = &nabla.weights * eta / total_nabla.len() as f64;
-            let b = &nabla.bias * eta / total_nabla.len() as f64;
+            let w = &nabla.weights * eta / batch.len() as f64;
+            let b = &nabla.bias * eta / batch.len() as f64;
             layer.weights -= &w;
             layer.bias -= &b;
         }
     }
 
-    fn back_propagate(&self, training_data: &TrainingData) -> (Vec::<LayerNabla>, f64) {
+    fn back_propagate(&self, training_data: &TrainingData) -> (Vec::<LayerNabla>, f64, bool) {
         let mut ff_results = self.apply(&training_data.input);
         let last_result = ff_results.pop().unwrap();
 
@@ -108,7 +124,7 @@ impl FeedForward {
             // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁻¹⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾ . ′σ(z⁽ᴸ⁾)
             delta = layer.weights.t().dot(&delta) * self.sigma_derivative(&result.z);
         };
-        (nabla, cost)
+        (nabla, cost, self.is_correct_result(&last_result.a, &training_data.expected))
     }
 
     fn sigma(&self, z: f64) -> f64 {
@@ -124,7 +140,7 @@ impl FeedForward {
         for (r, e) in result.iter().zip(expected.iter()) {
             cost += (r - e).powi(2);
         }
-        0.5 * cost
+        cost
     }
 
     // Considering the cost function to be: C = ½(result - expected)²
