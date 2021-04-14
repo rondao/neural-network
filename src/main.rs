@@ -152,8 +152,8 @@ impl FeedForward {
 impl HiddenLayer {
     fn new(num_inputs: usize, num_nodes: usize) -> Self {
         Self {
-            weights: Array::random((num_nodes, num_inputs), Uniform::new(0., 1.)),
-            bias: Array::random(num_nodes, Uniform::new(0., 1.))
+            weights: Array::random((num_nodes, num_inputs), Uniform::new(-1., 1.)),
+            bias: Array::random(num_nodes, Uniform::new(-1., 1.))
         }
     }
 
