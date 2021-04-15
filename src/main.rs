@@ -1,7 +1,10 @@
 use ndarray::{prelude::*, Array};
 use ndarray_rand::{RandomExt, rand_distr::Uniform};
 use plotters::prelude::*;
+use rand::thread_rng;
+use rand::seq::SliceRandom;
 use std::{convert::TryInto, f64::consts::E, fs, u32, usize};
+
 
 struct TrainingData {
     input: Array1<f64>,
@@ -75,33 +78,37 @@ impl FeedForward {
         layers_result
     }
 
-    fn train(&mut self, batch: &Vec<TrainingData>, eta: f64) {
+    fn train(&mut self, batch: &mut Vec<TrainingData>, eta: f64) {
         let mut total_nabla: Vec<_> = self.layers.iter().map(|layer| LayerNabla{
             weights: Array2::zeros(layer.weights.raw_dim()),
             bias: Array1::zeros(layer.bias.raw_dim()),
         }).collect();
 
+        batch.shuffle(&mut thread_rng());
+
         let mut total_cost = 0.;
         let mut score = 0;
-        for training_data in batch {
-            let (training_nabla, training_cost, is_correct) = self.back_propagate(training_data);
-            for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
-                nabla.weights += &training_layer_nabla.weights;
-                nabla.bias += &training_layer_nabla.bias;
+        for (mbi, mini_batch) in batch.chunks(100).enumerate() {
+            for training_data in mini_batch {
+                let (training_nabla, training_cost, is_correct) = self.back_propagate(training_data);
+                for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
+                    nabla.weights += &training_layer_nabla.weights;
+                    nabla.bias += &training_layer_nabla.bias;
+                }
+                total_cost += training_cost;
+                score += if is_correct {1} else {0};
             }
-            total_cost += training_cost;
-            score += if is_correct {1} else {0};
-        }
-        total_cost /= batch.len() as f64;
-        println!("Cost: {}", total_cost);
-        println!("Score: {} / {}", score, batch.len());
+            print!("\rScore: {:6} / {:6}", score, mbi * mini_batch.len());
 
-        for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
-            let w = &nabla.weights * eta / batch.len() as f64;
-            let b = &nabla.bias * eta / batch.len() as f64;
-            layer.weights -= &w;
-            layer.bias -= &b;
+            for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
+                let w = &nabla.weights * eta / mini_batch.len() as f64;
+                let b = &nabla.bias * eta / mini_batch.len() as f64;
+                layer.weights -= &w;
+                layer.bias -= &b;
+            }
         }
+        println!();
+        println!("Cost: {}", total_cost / batch.len() as f64);
     }
 
     fn back_propagate(&self, training_data: &TrainingData) -> (Vec::<LayerNabla>, f64, bool) {
@@ -174,7 +181,7 @@ fn main() {
 
     let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
     loop {
-        ff_nn.train(&training_images, 1.0);
+        ff_nn.train(&mut training_images, 1.0);
     }
 }
 
