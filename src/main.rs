@@ -90,13 +90,19 @@ impl FeedForward {
         let mut score = 0;
         for (mbi, mini_batch) in batch.chunks(100).enumerate() {
             for training_data in mini_batch {
-                let (training_nabla, training_cost, is_correct) = self.back_propagate(training_data);
+                let network_result = self.apply(&training_data.input);
+
+                let training_cost = self.cost(&network_result.last().unwrap().a, &training_data.expected);
+                let training_prediction = self.is_correct_result(&network_result.last().unwrap().a, &training_data.expected);
+
+                let training_nabla = self.back_propagate(network_result, training_data);
                 for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
                     nabla.weights += &training_layer_nabla.weights;
                     nabla.bias += &training_layer_nabla.bias;
                 }
+
                 total_cost += training_cost;
-                score += if is_correct {1} else {0};
+                score += if training_prediction {1} else {0};
             }
             print!("\rScore: {:6} / {:6}", score, mbi * mini_batch.len());
 
@@ -111,18 +117,15 @@ impl FeedForward {
         println!("Cost: {}", total_cost / batch.len() as f64);
     }
 
-    fn back_propagate(&self, training_data: &TrainingData) -> (Vec::<LayerNabla>, f64, bool) {
-        let mut ff_results = self.apply(&training_data.input);
-        let last_result = ff_results.pop().unwrap();
-
-        let cost = self.cost(&last_result.a, &training_data.expected) / last_result.a.len() as f64;
+    fn back_propagate(&self, mut network_result: Vec<LayerResult>, training_data: &TrainingData) -> Vec::<LayerNabla> {
+        let last_result = network_result.pop().unwrap();
 
         // 𝛿⁽ᴸ⁾ == ∂C/∂a⁽ᴸ⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ == ′C(a⁽ᴸ⁾, y) . ′σ(z⁽ᴸ⁾) |=> y = expected result
         let mut delta = self.cost_derivative(&last_result.a, &training_data.expected) * self.sigma_derivative(&last_result.z);
 
         // ∇aC |=> Gradient to maximize the network
         let mut nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
-        for (layer, result) in self.layers.iter().zip(ff_results).rev() {
+        for (layer, result) in self.layers.iter().zip(network_result).rev() {
             nabla.push(LayerNabla{
                 weights: delta.clone().into_shape((layer.weights.nrows(), 1)).unwrap()
                         .dot(&result.a.into_shape((1, layer.weights.ncols())).unwrap()),  // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ᵀ . 𝛿⁽ᴸ⁾
@@ -131,7 +134,7 @@ impl FeedForward {
             // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁻¹⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾ . ′σ(z⁽ᴸ⁾)
             delta = layer.weights.t().dot(&delta) * self.sigma_derivative(&result.z);
         };
-        (nabla, cost, self.is_correct_result(&last_result.a, &training_data.expected))
+        nabla
     }
 
     fn sigma(&self, z: f64) -> f64 {
@@ -147,7 +150,7 @@ impl FeedForward {
         for (r, e) in result.iter().zip(expected.iter()) {
             cost += (r - e).powi(2);
         }
-        cost
+        cost / result.len() as f64
     }
 
     // Considering the cost function to be: C = ½(result - expected)²
