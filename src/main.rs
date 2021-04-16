@@ -1,10 +1,9 @@
 use ndarray::{prelude::*, Array};
-use ndarray_rand::{RandomExt, rand_distr::Uniform};
+use ndarray_rand::{rand_distr::Uniform, RandomExt};
 use plotters::prelude::*;
-use rand::thread_rng;
 use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::{convert::TryInto, f64::consts::E, fs, u32, usize};
-
 
 struct TrainingData {
     input: Array1<f64>,
@@ -36,11 +35,15 @@ impl FeedForward {
             layers: Vec::with_capacity(num_layers),
         };
 
-        instance.layers.push(HiddenLayer::new(num_inputs, num_nodes));
+        instance
+            .layers
+            .push(HiddenLayer::new(num_inputs, num_nodes));
         for _ in 1..num_layers {
             instance.layers.push(HiddenLayer::new(num_nodes, num_nodes));
         }
-        instance.layers.push(HiddenLayer::new(num_nodes, num_outputs));
+        instance
+            .layers
+            .push(HiddenLayer::new(num_nodes, num_outputs));
 
         instance
     }
@@ -60,29 +63,37 @@ impl FeedForward {
                 expected = i;
                 break;
             }
-        };
+        }
         prediction == expected
     }
 
     fn apply(&self, input: &Array1<f64>) -> Vec<LayerResult> {
         let mut layers_result = Vec::with_capacity(self.layers.len() + 1);
-        layers_result.push(LayerResult{a: input.clone(), z: input.clone()});
+        layers_result.push(LayerResult {
+            a: input.clone(),
+            z: input.clone(),
+        });
 
         for (i, layer) in self.layers.iter().enumerate() {
             let zs = layer.apply(&layers_result[i].a);
-            layers_result.push(
-                LayerResult{a: zs.mapv(|z| self.sigma(z)), // a⁽ᴸ⁾ = σ(z⁽ᴸ⁾)
-                            z: zs});                       // z⁽ᴸ⁾ = w⁽ᴸ⁾.a⁽ᴸ⁻¹⁾ + b⁽ᴸ⁾
+            layers_result.push(LayerResult {
+                a: zs.mapv(|z| self.sigma(z)), // a⁽ᴸ⁾ = σ(z⁽ᴸ⁾)
+                z: zs,                         // z⁽ᴸ⁾ = w⁽ᴸ⁾.a⁽ᴸ⁻¹⁾ + b⁽ᴸ⁾
+            });
         }
 
         layers_result
     }
 
     fn train(&mut self, batch: &mut Vec<TrainingData>, eta: f64) {
-        let mut total_nabla: Vec<_> = self.layers.iter().map(|layer| LayerNabla{
-            weights: Array2::zeros(layer.weights.raw_dim()),
-            bias: Array1::zeros(layer.bias.raw_dim()),
-        }).collect();
+        let mut total_nabla: Vec<_> = self
+            .layers
+            .iter()
+            .map(|layer| LayerNabla {
+                weights: Array2::zeros(layer.weights.raw_dim()),
+                bias: Array1::zeros(layer.bias.raw_dim()),
+            })
+            .collect();
 
         batch.shuffle(&mut thread_rng());
 
@@ -92,17 +103,21 @@ impl FeedForward {
             for training_data in mini_batch {
                 let network_result = self.apply(&training_data.input);
 
-                let training_cost = self.cost(&network_result.last().unwrap().a, &training_data.expected);
-                let training_prediction = self.is_correct_result(&network_result.last().unwrap().a, &training_data.expected);
+                let training_cost =
+                    self.cost(&network_result.last().unwrap().a, &training_data.expected);
+                let training_prediction = self
+                    .is_correct_result(&network_result.last().unwrap().a, &training_data.expected);
 
                 let training_nabla = self.back_propagate(network_result, training_data);
-                for (nabla, training_layer_nabla) in total_nabla.iter_mut().rev().zip(training_nabla) {
+                for (nabla, training_layer_nabla) in
+                    total_nabla.iter_mut().rev().zip(training_nabla)
+                {
                     nabla.weights += &training_layer_nabla.weights;
                     nabla.bias += &training_layer_nabla.bias;
                 }
 
                 total_cost += training_cost;
-                score += if training_prediction {1} else {0};
+                score += if training_prediction { 1 } else { 0 };
             }
             print!("\rScore: {:6} / {:6}", score, mbi * mini_batch.len());
 
@@ -117,23 +132,31 @@ impl FeedForward {
         println!("Cost: {}", total_cost / batch.len() as f64);
     }
 
-    fn back_propagate(&self, mut network_result: Vec<LayerResult>, training_data: &TrainingData) -> Vec::<LayerNabla> {
+    fn back_propagate(
+        &self,
+        mut network_result: Vec<LayerResult>,
+        training_data: &TrainingData,
+    ) -> Vec<LayerNabla> {
         let last_result = network_result.pop().unwrap();
 
         // 𝛿⁽ᴸ⁾ == ∂C/∂a⁽ᴸ⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ == ′C(a⁽ᴸ⁾, y) . ′σ(z⁽ᴸ⁾) |=> y = expected result
-        let mut delta = self.cost_derivative(&last_result.a, &training_data.expected) * self.sigma_derivative(&last_result.z);
+        let mut delta = self.cost_derivative(&last_result.a, &training_data.expected)
+            * self.sigma_derivative(&last_result.z);
 
         // ∇aC |=> Gradient to maximize the network
         let mut nabla = Vec::<LayerNabla>::with_capacity(self.layers.len());
         for (layer, result) in self.layers.iter().zip(network_result).rev() {
-            nabla.push(LayerNabla{
-                weights: delta.clone().into_shape((layer.weights.nrows(), 1)).unwrap()
-                        .dot(&result.a.into_shape((1, layer.weights.ncols())).unwrap()),  // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ᵀ . 𝛿⁽ᴸ⁾
-                bias: delta.clone(),                                                      // ∂C/∂b⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂b⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == 1 . 𝛿⁽ᴸ⁾
+            nabla.push(LayerNabla {
+                weights: delta // ∂C/∂w⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂w⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == a⁽ᴸ⁻¹⁾ᵀ . 𝛿⁽ᴸ⁾
+                    .clone()
+                    .into_shape((layer.weights.nrows(), 1))
+                    .unwrap()
+                    .dot(&result.a.into_shape((1, layer.weights.ncols())).unwrap()),
+                bias: delta.clone(), // ∂C/∂b⁽ᴸ⁾ == ∂z⁽ᴸ⁾/∂b⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == 1 . 𝛿⁽ᴸ⁾
             });
             // 𝛿⁽ᴸ⁻¹⁾ == ∂z⁽ᴸ⁾/∂a⁽ᴸ⁻¹⁾ . ∂a⁽ᴸ⁾/∂z⁽ᴸ⁾ . 𝛿⁽ᴸ⁾ == w⁽ᴸ⁾ᵀ . 𝛿⁽ᴸ⁾ . ′σ(z⁽ᴸ⁾)
             delta = layer.weights.t().dot(&delta) * self.sigma_derivative(&result.z);
-        };
+        }
         nabla
     }
 
@@ -163,7 +186,7 @@ impl HiddenLayer {
     fn new(num_inputs: usize, num_nodes: usize) -> Self {
         Self {
             weights: Array::random((num_nodes, num_inputs), Uniform::new(-1., 1.)),
-            bias: Array::random(num_nodes, Uniform::new(-1., 1.))
+            bias: Array::random(num_nodes, Uniform::new(-1., 1.)),
         }
     }
 
@@ -177,9 +200,11 @@ fn main() {
     let mut images_labels = get_training_labels();
 
     let mut training_images = Vec::new();
-    while let (Some(pixels),Some(label)) = (images_pixels.pop(), images_labels.pop()) {
-        training_images.push(TrainingData{input: Array::from(pixels),
-                                          expected: label_to_output_array(label as usize, 10)});
+    while let (Some(pixels), Some(label)) = (images_pixels.pop(), images_labels.pop()) {
+        training_images.push(TrainingData {
+            input: Array::from(pixels),
+            expected: label_to_output_array(label as usize, 10),
+        });
     }
 
     let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
@@ -224,14 +249,13 @@ fn get_training_labels() -> Vec<u8> {
 }
 
 fn label_to_output_array(label: usize, size: usize) -> Array1<f64> {
-    Array::from_iter((0..size).map(|value| if value == label {1.0} else {0.0}))
+    Array::from_iter((0..size).map(|value| if value == label { 1.0 } else { 0.0 }))
 }
 
 #[allow(dead_code)]
 fn image_to_file(file_name: &str, image: &TrainingData, num_rows: usize, num_columns: usize) {
     let root_drawing_area =
-        BitMapBackend::new(&file_name, (num_rows as u32, num_columns as u32))
-            .into_drawing_area();
+        BitMapBackend::new(&file_name, (num_rows as u32, num_columns as u32)).into_drawing_area();
     let sub_areas = root_drawing_area.split_evenly((num_rows, num_columns));
 
     for row in 0..num_rows {
