@@ -122,10 +122,8 @@ impl FeedForward {
             print!("\rScore: {:6} / {:6}", score, mbi * mini_batch.len());
 
             for (layer, nabla) in self.layers.iter_mut().zip(&total_nabla) {
-                let w = &nabla.weights * eta / mini_batch.len() as f64;
-                let b = &nabla.bias * eta / mini_batch.len() as f64;
-                layer.weights -= &w;
-                layer.bias -= &b;
+                layer.weights -= &(&nabla.weights * eta / mini_batch.len() as f64);
+                layer.bias -= &(&nabla.bias * eta / mini_batch.len() as f64);
             }
         }
         println!();
@@ -180,6 +178,41 @@ impl FeedForward {
     fn cost_derivative(&self, result: &Array1<f64>, expected: &Array1<f64>) -> Array1<f64> {
         result - expected
     }
+
+    fn to_file(&self, epoch: usize) {
+        for (li, layer) in self.layers.iter().enumerate() {
+            let file_name = &format!("network_l-{}_e-{}.png", li, epoch);
+            let (nrows, ncols) = (layer.weights.nrows() + 1, layer.weights.ncols());
+
+            let size = nrows.max(ncols);
+            let layer_drawing_area =
+                BitMapBackend::new(&file_name, (size as u32, size as u32)).into_drawing_area();
+            let sub_areas = layer_drawing_area.split_evenly((size, size));
+
+            for row in 0..nrows - 1 {
+                for column in 0..ncols {
+                    let weight = layer.weights[(row, column)];
+                    let color = if weight > 0. {
+                        RGBColor(0, (weight * 255.) as u8, 0)
+                    } else {
+                        RGBColor((weight * -255.) as u8, 0, 0)
+                    };
+                    sub_areas[row * ncols + column].fill(&color).unwrap();
+                }
+            }
+            for column in 0..layer.bias.len() {
+                let bias = layer.bias[column];
+                let color = if bias > 0. {
+                    RGBColor((bias * 255.) as u8, 0, (bias * 255.) as u8)
+                } else {
+                    RGBColor(0, 0, (bias * -255.) as u8)
+                };
+                sub_areas[(nrows - 1) * ncols + column]
+                    .fill(&color)
+                    .unwrap();
+            }
+        }
+    }
 }
 
 impl HiddenLayer {
@@ -208,8 +241,13 @@ fn main() {
     }
 
     let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
+
+    let mut epoch = 0;
     loop {
+        println!("EPOCH: {}", epoch);
+        ff_nn.to_file(epoch);
         ff_nn.train(&mut training_images, 1.0);
+        epoch += 1;
     }
 }
 
@@ -261,7 +299,7 @@ fn image_to_file(file_name: &str, image: &TrainingData, num_rows: usize, num_col
     for row in 0..num_rows {
         for column in 0..num_columns {
             let color = image.input[row * num_rows + column];
-            sub_areas[row * num_rows + column]
+            sub_areas[row * num_columns + column]
                 .fill(&HSLColor(color, color, color))
                 .unwrap();
         }
