@@ -3,7 +3,13 @@ use ndarray_rand::{rand_distr::Uniform, RandomExt};
 use plotters::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use std::{convert::TryInto, f64::consts::E, fs, u32, usize};
+use std::{
+    convert::TryInto,
+    f64::consts::E,
+    fs::{self, File},
+    io::{Read, Write},
+    u32, usize,
+};
 
 struct TrainingData {
     input: Array1<f64>,
@@ -179,9 +185,36 @@ impl FeedForward {
         result - expected
     }
 
-    fn to_file(&self, epoch: usize) {
+    fn to_file(&self, filename: &str) -> std::io::Result<()> {
+        let mut file = File::create(filename)?;
+
+        file.write(&(self.layers.len() as u64).to_be_bytes())?;
+        for layer in self.layers.iter() {
+            layer.to_file(&mut file)?;
+        }
+        Ok(())
+    }
+
+    fn from_file(filename: &str) -> std::io::Result<Self> {
+        let mut file = File::open(filename)?;
+        let mut buf = [0 as u8; 8];
+
+        file.read(&mut buf)?;
+        let num_layers = u64::from_be_bytes(buf) as usize;
+        let mut instance = Self {
+            layers: Vec::with_capacity(num_layers),
+        };
+
+        for _ in 0..num_layers {
+            instance.layers.push(HiddenLayer::from_file(&mut file)?);
+        }
+
+        Ok(instance)
+    }
+
+    fn to_image(&self, epoch: usize) {
         for (li, layer) in self.layers.iter().enumerate() {
-            let file_name = &format!("network_l-{}_e-{}.png", li, epoch);
+            let file_name = &format!("network_e-{}_l-{}.png", epoch, li);
             let (nrows, ncols) = (layer.weights.nrows() + 1, layer.weights.ncols());
 
             let size = nrows.max(ncols);
@@ -226,6 +259,48 @@ impl HiddenLayer {
     fn apply(&self, input: &Array1<f64>) -> Array1<f64> {
         &self.weights.dot(input) + &self.bias
     }
+
+    fn to_file(&self, file: &mut File) -> std::io::Result<()> {
+        file.write(&self.weights.nrows().to_be_bytes())?;
+        file.write(&self.weights.ncols().to_be_bytes())?;
+        file.write(&self.bias.len().to_be_bytes())?;
+
+        for w in self.weights.iter() {
+            file.write(&w.to_be_bytes())?;
+        }
+        for b in self.bias.iter() {
+            file.write(&b.to_be_bytes())?;
+        }
+
+        Ok(())
+    }
+
+    fn from_file(file: &mut File) -> std::io::Result<Self> {
+        let mut buf = [0 as u8; 8];
+
+        file.read(&mut buf)?;
+        let weights_nrows = u64::from_be_bytes(buf) as usize;
+        file.read(&mut buf)?;
+        let weights_ncols = u64::from_be_bytes(buf) as usize;
+        file.read(&mut buf)?;
+        let bias_len = u64::from_be_bytes(buf) as usize;
+
+        let mut instance = Self {
+            weights: Array::zeros((weights_nrows, weights_ncols)),
+            bias: Array::zeros(bias_len),
+        };
+
+        for w in instance.weights.iter_mut() {
+            file.read(&mut buf)?;
+            *w += f64::from_be_bytes(buf);
+        }
+        for b in instance.bias.iter_mut() {
+            file.read(&mut buf)?;
+            *b += f64::from_be_bytes(buf);
+        }
+
+        Ok(instance)
+    }
 }
 
 fn main() {
@@ -240,13 +315,17 @@ fn main() {
         });
     }
 
-    let mut ff_nn = FeedForward::new(num_rows * num_columns, 16, 2, 10);
+    let mut ff_nn = FeedForward::from_file("neural-network.txt")
+        .unwrap_or_else(|_| FeedForward::new(num_rows * num_columns, 16, 2, 10));
 
     let mut epoch = 0;
     loop {
         println!("EPOCH: {}", epoch);
-        ff_nn.to_file(epoch);
-        ff_nn.train(&mut training_images, 1.0);
+
+        // ff_nn.to_image(epoch);
+        ff_nn.train(&mut training_images, 0.00001);
+        ff_nn.to_file("neural-network.txt").unwrap();
+
         epoch += 1;
     }
 }
